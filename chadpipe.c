@@ -22,7 +22,7 @@
 typedef struct {
   PyObject_HEAD
   PyObject* input;
-  unsigned nargs;
+  unsigned nexec;
   int (*fd)[2];
   char*** args;
 } pipe_obj;
@@ -32,6 +32,25 @@ typedef struct {
 //   pipe* self = (pipe*) type->tp_alloc(type, 0);
 //   return (PyObject*) self;
 // }
+
+static
+void pipe_dealloc(pipe_obj* self) {
+  if (self->input) Py_DECREF(self->input);
+  if (self->fd) free(self->fd);
+  if (self->args) {
+    for (unsigned i=0; i<self->nexec; ++i) {
+      char** a = self->args[i];
+      for (char** b=a; *b; ++b) {
+        printf("free \"%s\"\n",*b);
+        free(*b);
+      }
+      printf("free %u\n",i);
+      free(a);
+    }
+    free(self->args);
+  }
+  Py_TYPE(self)->tp_free((PyObject*)self);
+}
 
 static
 int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
@@ -54,7 +73,6 @@ int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
   }
 
   // reserve pipes
-  self->nargs = nargs;
   self->fd = malloc(sizeof(int[2])*nargs);
   for (unsigned i=0; i<nargs; ++i) {
     int* fd = self->fd[i];
@@ -63,10 +81,11 @@ int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
   }
 
   const unsigned nexec = nargs-1; // TODO
-  /* if (*arg == Py_None) */
+  self->nexec = nexec;
+  /* TODO: if (*arg == Py_None) */
 
   // reserve args
-  char*** exec_args = self->args = malloc(sizeof(char**)*nexec);
+  char*** exec_args = self->args = malloc(sizeof(char**)*(nexec+1));
   for (unsigned i=0; i<=nexec; ++i)
     exec_args[i] = NULL;
 
@@ -82,9 +101,13 @@ int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
     for (PyObject* item; (item = PyIter_Next(iter)); ++i) {
       Py_ssize_t len = 0;
       const char* str = PyUnicode_AsUTF8AndSize(item,&len);
-      if (!str) goto err_item;
+      if (!str) {
+        PyErr_SetString(PyExc_ValueError,
+          ERROR_PREF "all exec arguments must be strings");
+        goto err_item;
+      }
 
-      if (cap-i < 2) { // extend args capacity
+      if (cap < i+2) { // extend args capacity
         *exec_args = *exec_args
           ? realloc(*exec_args, sizeof(char*)*(cap <<= 1))
           : malloc(sizeof(char*)*(cap = 2));
@@ -108,7 +131,7 @@ err_item:
 
   exec_args = self->args;
   for (unsigned i=0; i<nexec; ++i) {
-    const char** argv = exec_args[i];
+    char** argv = exec_args[i];
     while (*argv) {
       printf("%s\n",*argv);
       ++argv;
@@ -119,13 +142,13 @@ err_item:
   return 0;
 
 err:
-  // TODO: free()
   return 1;
+  // Note: Python calls destructor even if 1 is returned
 }
 
 static
 int pipe_run(pipe_obj* self) {
-  const unsigned n = self->nargs;
+  const unsigned n = self->nexec;
   for (unsigned i=0; i<n; ++i) {
     if (pipe(self->fd[i])) {
       /* while (--i) close(self->fd[i]); */
@@ -144,14 +167,14 @@ int pipe_run(pipe_obj* self) {
 // static
 // PyObject* hist_fill(hist* self, PyTupleObject* targs, PyObject* kwargs) {
 // }
-//
-// static
-// PyMethodDef pipe_methods[] = {
-//   { "fill", (PyCFunction) hist_fill, METH_VARARGS,
-//     "Fill histogram bin corresponding to the provided point"
-//   },
-//   { NULL }
-// };
+
+static
+PyMethodDef pipe_methods[] = {
+  // { "fill", (PyCFunction) hist_fill, METH_VARARGS,
+  //   "Fill histogram bin corresponding to the provided point"
+  // },
+  { NULL }
+};
 
 static
 PyTypeObject pipe_type = {
@@ -163,9 +186,9 @@ PyTypeObject pipe_type = {
   .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
   .tp_new = PyType_GenericNew,
   .tp_init = (initproc) pipe_init,
-  /* .tp_dealloc = (destructor) pipe_dealloc, */
+  .tp_dealloc = (destructor) pipe_dealloc,
   // .tp_members = pipe_members,
-  // .tp_methods = pipe_methods,
+  .tp_methods = pipe_methods,
 };
 
 /* static PyMethodDef CAT(MODULE_NAME,_methods)[] = { */

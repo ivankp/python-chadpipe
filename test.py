@@ -5,5 +5,7 @@ from chadpipe import pipe
 p = pipe(
     'test text',
     ['cat'],
-    ['exe','1']
+    ['exe','-v'],
+    # ['exe','-v',1],
+    # None # TODO: segfault
 )
