@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 /* #include <stdarg.h> */
+#include <stdbool.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -129,21 +130,32 @@ err_item:
     Py_DECREF(iter);
   }
 
-  exec_args = self->args;
-  for (unsigned i=0; i<nexec; ++i) {
-    char** argv = exec_args[i];
-    while (*argv) {
-      printf("%s\n",*argv);
-      ++argv;
-    }
-    printf("\n");
-  }
-
   return 0;
 
 err:
   return -1;
-  // Note: Python calls destructor even if -1 is returned
+  // Note: Python calls dealloc even if init returns -1
+}
+
+static
+PyObject* pipe_str(pipe_obj* self) {
+  PyObject* str = PyUnicode_FromString("");
+  for (unsigned i=0; i<self->nexec; ++i) {
+    bool first = true;
+    for (char** argv = self->args[i]; *argv; ++argv) {
+      const bool q = !*argv || strpbrk(*argv," \t\n\r"); // need to quote
+
+      PyObject* str2 = PyUnicode_FromFormat(
+        "%U%s%s%s%s", str, (first ? (i?" | ":"") : " "),
+        (q?"'":""), *argv, (q?"'":"")
+      );
+
+      Py_DECREF(str);
+      str = str2;
+      if (first) first = false;
+    }
+  }
+  return str;
 }
 
 /*
@@ -189,6 +201,7 @@ PyTypeObject pipe_type = {
   .tp_new = PyType_GenericNew,
   .tp_init = (initproc) pipe_init,
   .tp_dealloc = (destructor) pipe_dealloc,
+  .tp_str = (reprfunc) pipe_str,
   // .tp_members = pipe_members,
   .tp_methods = pipe_methods,
 };
