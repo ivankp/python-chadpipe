@@ -7,7 +7,7 @@ print(pipe(
     ['cat'],
     ['exe','-v'],
     ['exe','-v','two words'],
-    # ['exe',''],
+    ['exe',''],
     # ( str(i) for i in range(5) ),
     # ['exe','-v',1], # bad
     # None # bad

@@ -22,6 +22,7 @@
 
 typedef struct {
   PyObject_HEAD
+  // TODO: idea: pass input in function rather than constructor?
   PyObject* source;
   unsigned nexec;
   char*** args;
@@ -139,11 +140,13 @@ err:
 
 static
 PyObject* pipe_str(pipe_obj* self) {
+  // TODO: handle quotes
+  // TODO: efficiently merge strings
   PyObject* str = PyUnicode_FromString("");
   for (unsigned i=0; i<self->nexec; ++i) {
     bool first = true;
     for (char** argv = self->args[i]; *argv; ++argv) {
-      const bool q = !*argv || strpbrk(*argv," \t\n\r"); // need to quote
+      const bool q = !**argv || strpbrk(*argv," \t\n\r"); // need to quote
 
       PyObject* str2 = PyUnicode_FromFormat(
         "%U%s%s%s%s", str, (first ? (i?" | ":"") : " "),
