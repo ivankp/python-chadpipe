@@ -21,9 +21,8 @@
 
 typedef struct {
   PyObject_HEAD
-  PyObject* input;
+  PyObject* source;
   unsigned nexec;
-  int (*fd)[2];
   char*** args;
 } pipe_obj;
 
@@ -35,16 +34,16 @@ typedef struct {
 
 static
 void pipe_dealloc(pipe_obj* self) {
-  if (self->input) Py_DECREF(self->input);
-  if (self->fd) free(self->fd);
+  if (self->source) Py_DECREF(self->source);
   if (self->args) {
     for (unsigned i=0; i<self->nexec; ++i) {
       char** a = self->args[i];
+      if (!a) break;
       for (char** b=a; *b; ++b) {
-        printf("free \"%s\"\n",*b);
+        // printf("free \"%s\"\n",*b);
         free(*b);
       }
-      printf("free %u\n",i);
+      // printf("free %u\n",i);
       free(a);
     }
     free(self->args);
@@ -62,48 +61,42 @@ int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
   }
   PyObject** const args = targs->ob_item;
 
-  PyObject* const arg0 = args[0];
-  // TODO: allow None
-  if (PyUnicode_Check(arg0)) {
-
+  // validate first argument
+  PyObject* const source = args[0];
+  if (source == Py_None) {
+    // no source, nothing to do nothing
+  } else if (PyUnicode_Check(source)) {
+    // source is a string
+    Py_INCREF(source);
+    self->source = source;
   } else {
     PyErr_SetString(PyExc_ValueError,
       ERROR_PREF "unexpected first argument type");
     return -1;
   }
 
-  // reserve pipes
-  self->fd = malloc(sizeof(int[2])*nargs);
-  for (unsigned i=0; i<nargs; ++i) {
-    int* fd = self->fd[i];
-    fd[0] = -1;
-    fd[1] = -1;
-  }
-
-  const unsigned nexec = nargs-1; // TODO
-  self->nexec = nexec;
-  /* TODO: if (*arg == Py_None) */
+  const unsigned nexec = self->nexec = nargs-1;
 
   // reserve args
-  char*** exec_args = self->args = malloc(sizeof(char**)*(nexec+1));
-  for (unsigned i=0; i<=nexec; ++i)
+  char*** exec_args = self->args = malloc(sizeof(char**)*nexec);
+  for (unsigned i=0; i<nexec; ++i)
     exec_args[i] = NULL;
 
-  for (unsigned ei=0; ei<nexec; ++ei) {
-    PyObject* iter = PyObject_GetIter(args[ei+1]);
+  for (unsigned ai=1; ai<nargs; ++ai) {
+    PyObject* iter = PyObject_GetIter(args[ai]);
     if (!iter) {
-      if (!PyErr_Occurred())
-        PyErr_SetString(PyExc_ValueError,
-          ERROR_PREF "invalid argument: not iterable");
+      // PyErr_SetString(PyExc_ValueError,
+      //   ERROR_PREF "invalid pipe argument, not iterable");
       goto err;
     }
+
     unsigned i=0, cap=0;
     for (PyObject* item; (item = PyIter_Next(iter)); ++i) {
       Py_ssize_t len = 0;
       const char* str = PyUnicode_AsUTF8AndSize(item,&len);
       if (!str) {
         PyErr_SetString(PyExc_ValueError,
-          ERROR_PREF "all exec arguments must be strings");
+          ERROR_PREF "all exec args must be strings");
         goto err_item;
       }
 
@@ -118,16 +111,23 @@ int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
       char* const arg = (*exec_args)[i] = malloc(len+1);
       memcpy(arg,str,len+1);
 
-      Py_DECREF(item); // TODO: make sure this is needed
+      Py_DECREF(item);
       continue;
 
 err_item:
-      Py_DECREF(item); // TODO: make sure this is needed
+      Py_DECREF(item);
+      Py_DECREF(iter);
       goto err;
     }
+    if (i==0) {
+      PyErr_SetString(PyExc_ValueError,
+        ERROR_PREF "pipe argument with zero values");
+      goto err;
+    }
+
     ++exec_args;
+    Py_DECREF(iter);
   }
-  // TODO: error if i < 1
 
   exec_args = self->args;
   for (unsigned i=0; i<nexec; ++i) {
@@ -146,6 +146,7 @@ err:
   // Note: Python calls destructor even if -1 is returned
 }
 
+/*
 static
 int pipe_run(pipe_obj* self) {
   const unsigned n = self->nexec;
@@ -163,6 +164,7 @@ int pipe_run(pipe_obj* self) {
     }
   }
 }
+*/
 
 // static
 // PyObject* hist_fill(hist* self, PyTupleObject* targs, PyObject* kwargs) {
