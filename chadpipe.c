@@ -142,8 +142,8 @@ err_item:
   return 0;
 
 err:
-  return 1;
-  // Note: Python calls destructor even if 1 is returned
+  return -1;
+  // Note: Python calls destructor even if -1 is returned
 }
 
 static
@@ -151,12 +151,12 @@ int pipe_run(pipe_obj* self) {
   const unsigned n = self->nexec;
   for (unsigned i=0; i<n; ++i) {
     if (pipe(self->fd[i])) {
-      /* while (--i) close(self->fd[i]); */
+      const int e = errno;
       char msg[1<<8];
       snprintf(
         msg, sizeof(msg),
         ERROR_PREF "pipe(): [%d] %s",
-        errno, strerror(errno)
+        e, strerror(e)
       );
       PyErr_SetString(PyExc_ValueError,msg);
       return -1;
