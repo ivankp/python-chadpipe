@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-/* #include <stdarg.h> */
 #include <stdbool.h>
 #include <string.h>
 #include <errno.h>
@@ -22,9 +21,7 @@
 
 typedef struct {
   PyObject_HEAD
-  // TODO: idea: pass input in function rather than constructor?
-  PyObject* source;
-  unsigned nexec;
+  unsigned nargs;
   char*** args;
 } pipe_obj;
 
@@ -36,9 +33,8 @@ typedef struct {
 
 static
 void pipe_dealloc(pipe_obj* self) {
-  if (self->source) Py_DECREF(self->source);
   if (self->args) {
-    for (unsigned i=0; i<self->nexec; ++i) {
+    for (unsigned i=0; i<self->nargs; ++i) {
       char** a = self->args[i];
       if (!a) break;
       for (char** b=a; *b; ++b) {
@@ -56,35 +52,20 @@ void pipe_dealloc(pipe_obj* self) {
 static
 int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
   const unsigned nargs = Py_SIZE(targs);
-  if (nargs < 2) {
+  if (nargs < 1) {
     PyErr_SetString(PyExc_ValueError,
-      ERROR_PREF "pipe requires at least 2 arguments");
+      ERROR_PREF "pipe requires at least 1 argument");
     return -1;
   }
   PyObject** const args = targs->ob_item;
-
-  // validate first argument
-  PyObject* const source = args[0];
-  if (source == Py_None) {
-    // no source, nothing to do nothing
-  } else if (PyUnicode_Check(source)) {
-    // source is a string
-    Py_INCREF(source);
-    self->source = source;
-  } else {
-    PyErr_SetString(PyExc_ValueError,
-      ERROR_PREF "unexpected first argument type");
-    return -1;
-  }
-
-  const unsigned nexec = self->nexec = nargs-1;
+  self->nargs = nargs;
 
   // reserve args
-  char*** exec_args = self->args = malloc(sizeof(char**)*nexec);
-  for (unsigned i=0; i<nexec; ++i)
+  char*** exec_args = self->args = malloc(sizeof(char**)*nargs);
+  for (unsigned i=0; i<nargs; ++i)
     exec_args[i] = NULL;
 
-  for (unsigned ai=1; ai<nargs; ++ai) {
+  for (unsigned ai=0; ai<nargs; ++ai) {
     PyObject* iter = PyObject_GetIter(args[ai]);
     if (!iter) {
       // PyErr_SetString(PyExc_ValueError,
@@ -143,7 +124,7 @@ PyObject* pipe_str(pipe_obj* self) {
   // TODO: handle quotes
   // TODO: efficiently merge strings
   PyObject* str = PyUnicode_FromString("");
-  for (unsigned i=0; i<self->nexec; ++i) {
+  for (unsigned i=0; i<self->nargs; ++i) {
     bool first = true;
     for (char** argv = self->args[i]; *argv; ++argv) {
       const bool q = !**argv || strpbrk(*argv," \t\n\r"); // need to quote
@@ -161,37 +142,98 @@ PyObject* pipe_str(pipe_obj* self) {
   return str;
 }
 
-/*
+enum source_type_enum { source_none, source_str };
+
 static
-int pipe_run(pipe_obj* self) {
-  const unsigned n = self->nexec;
-  for (unsigned i=0; i<n; ++i) {
-    if (pipe(self->fd[i])) {
-      const int e = errno;
-      char msg[1<<8];
-      snprintf(
-        msg, sizeof(msg),
-        ERROR_PREF "pipe(): [%d] %s",
-        e, strerror(e)
-      );
-      PyErr_SetString(PyExc_ValueError,msg);
-      return -1;
+PyObject* pipe_call(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
+  const unsigned nargs = Py_SIZE(targs);
+  PyObject** const args = targs->ob_item;
+
+  // validate first argument
+  enum source_type_enum source_type = source_none;
+  PyObject* source = nargs ? args[0] : NULL;
+  if (source) {
+    if (source == Py_None) { // None
+      source = NULL;
+    } else if (PyUnicode_Check(source)) { // str
+      source_type = source_str;
+      /* Py_INCREF(source); */
+    } else {
+      PyErr_SetString(PyExc_ValueError,
+        ERROR_PREF "unexpected source argument type");
+      return NULL;
     }
   }
+
+#define ERR(FCN) { \
+  const int e = errno; \
+  char msg[1<<8]; \
+  snprintf( \
+    msg, sizeof(msg), \
+    ERROR_PREF FCN "(): [%d] %s", \
+    e, strerror(e) \
+  ); \
+  PyErr_SetString(PyExc_ValueError,msg); \
+  return NULL; \
 }
-*/
+
+// TODO: connect multiple pipes
+
+  int pipes[2][2];
+  for (unsigned i=0; i<2; ++i) {
+    if (pipe(pipes[i])) ERR("pipe")
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) ERR("fork")
+  if (pid == 0) { // this is the child process
+    close(pipes[0][1]); // close the write end
+    close(pipes[1][0]); // close the read end
+    if (dup2(pipes[0][0], STDIN_FILENO ) < 0) ERR("dup2")
+    if (dup2(pipes[1][1], STDOUT_FILENO) < 0) ERR("dup2")
+    if (execvp(self->args[0][0],self->args[0]) < 0) ERR("execvp")
+    // child process is replaced by exec()
+  }
+
+  // this is the original process
+  close(pipes[0][0]); // close the read end
+  close(pipes[1][1]); // close the write end
+  switch (source_type) {
+    case source_none:
+      break;
+    case source_str:
+      Py_ssize_t len = 0;
+      const char* str = PyUnicode_AsUTF8AndSize(source,&len);
+      if (write(pipes[0][1],str,len) < 0) ERR("write")
+      break;
+  }
+  close(pipes[0][1]); // send EOF
+  wait(NULL); // wait for the child
+
+  char buf[256];
+
+  ssize_t nread = read(pipes[1][0],buf,255);
+  close(pipes[1][0]);
+  if (nread < 0) ERR("read")
+  buf[255] = '\0';
+
+  PyObject* str = PyUnicode_FromStringAndSize(buf,nread);
+  return str;
+
+  // Py_RETURN_NONE;
+}
 
 // static
-// PyObject* hist_fill(hist* self, PyTupleObject* targs, PyObject* kwargs) {
+// PyObject* pipe_fcn(hist* self, PyTupleObject* targs, PyObject* kwargs) {
 // }
-
-static
-PyMethodDef pipe_methods[] = {
-  // { "fill", (PyCFunction) hist_fill, METH_VARARGS,
-  //   "Fill histogram bin corresponding to the provided point"
-  // },
-  { NULL }
-};
+//
+// static
+// PyMethodDef pipe_methods[] = {
+//   { "fill", (PyCFunction) pipe_fcn, METH_VARARGS,
+//     "Fill histogram bin corresponding to the provided point"
+//   },
+//   { NULL }
+// };
 
 static
 PyTypeObject pipe_type = {
@@ -205,19 +247,20 @@ PyTypeObject pipe_type = {
   .tp_init = (initproc) pipe_init,
   .tp_dealloc = (destructor) pipe_dealloc,
   .tp_str = (reprfunc) pipe_str,
+  .tp_call = (ternaryfunc) pipe_call,
   // .tp_members = pipe_members,
-  .tp_methods = pipe_methods,
+  // .tp_methods = pipe_methods,
 };
 
-/* static PyMethodDef CAT(MODULE_NAME,_methods)[] = { */
-/*   { NULL } */
-/* }; */
+// static PyMethodDef CAT(MODULE_NAME,_methods)[] = {
+//   { NULL }
+// };
 
 static
 PyModuleDef CAT(MODULE_NAME,_module) = {
   PyModuleDef_HEAD_INIT,
   .m_name = STR(MODULE_NAME),
-  .m_doc = "Lay unix pipes like a Chad",
+  .m_doc = "Lay Unix pipes like a Chad",
   .m_size = -1,
   // .m_methods = CAT(MODULE_NAME,_methods),
 };

@@ -3,7 +3,6 @@
 from chadpipe import pipe
 
 print(pipe(
-    'test text',
     ['cat'],
     ['exe','-v'],
     ['exe','-v','two words'],
@@ -13,3 +12,7 @@ print(pipe(
     # None # bad
     # ( str(i) for i in range(0) ), # bad
 ))
+
+print(pipe(['cat'])('test text'))
+
+print(pipe(['sed','-e','s/t/T/g','-e','s/ex/Ex/g'])('test text'))
