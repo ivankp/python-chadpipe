@@ -13,6 +13,6 @@ print(pipe(
     # ( str(i) for i in range(0) ), # bad
 ))
 
-print(pipe(['cat'])('test text'))
+print(pipe(['cat'])('test text '*2))
 
 print(pipe(['sed','-e','s/t/T/g','-e','s/ex/Ex/g'])('test text'))

@@ -23,7 +23,7 @@ typedef struct {
   PyObject_HEAD
   unsigned nargs;
   char*** args;
-} pipe_obj;
+} pipe_args;
 
 // static
 // PyObject* pipe_new(PyTypeObject* type, PyObject* args, PyObject* kwargs) {
@@ -32,7 +32,7 @@ typedef struct {
 // }
 
 static
-void pipe_dealloc(pipe_obj* self) {
+void pipe_dealloc(pipe_args* self) {
   if (self->args) {
     for (unsigned i=0; i<self->nargs; ++i) {
       char** a = self->args[i];
@@ -50,7 +50,7 @@ void pipe_dealloc(pipe_obj* self) {
 }
 
 static
-int pipe_init(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
+int pipe_init(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   const unsigned nargs = Py_SIZE(targs);
   if (nargs < 1) {
     PyErr_SetString(PyExc_ValueError,
@@ -120,18 +120,18 @@ err:
 }
 
 static
-PyObject* pipe_str(pipe_obj* self) {
+PyObject* pipe_str(pipe_args* self) {
   // TODO: handle quotes
   // TODO: efficiently merge strings
   PyObject* str = PyUnicode_FromString("");
   for (unsigned i=0; i<self->nargs; ++i) {
     bool first = true;
-    for (char** argv = self->args[i]; *argv; ++argv) {
-      const bool q = !**argv || strpbrk(*argv," \t\n\r"); // need to quote
+    for (char **argv = self->args[i], *arg; (arg=*argv); ++argv) {
+      const bool q = !*arg || strpbrk(arg," \t\n\r"); // need to quote
 
       PyObject* str2 = PyUnicode_FromFormat(
         "%U%s%s%s%s", str, (first ? (i?" | ":"") : " "),
-        (q?"'":""), *argv, (q?"'":"")
+        (q?"'":""), arg, (q?"'":"")
       );
 
       Py_DECREF(str);
@@ -142,11 +142,22 @@ PyObject* pipe_str(pipe_obj* self) {
   return str;
 }
 
+// bool all_ascii(const char* s, size_t n) {
+//   for (size_t i=0; i<n; ++i)
+//     if (s[i] < 0) return false;
+//   return true;
+// }
+
 enum source_type_enum { source_none, source_str };
 
 static
-PyObject* pipe_call(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
+PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   const unsigned nargs = Py_SIZE(targs);
+  if (nargs > 1) {
+    PyErr_SetString(PyExc_ValueError,
+      ERROR_PREF "pipe called with more than 1 positional argument");
+    return NULL;
+  }
   PyObject** const args = targs->ob_item;
 
   // validate first argument
@@ -162,6 +173,20 @@ PyObject* pipe_call(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
       PyErr_SetString(PyExc_ValueError,
         ERROR_PREF "unexpected source argument type");
       return NULL;
+    }
+  }
+
+  Py_ssize_t ndelims = 0;
+  const char* delims = NULL;
+  if (kwargs) {
+    PyObject* d = PyDict_GetItemString(kwargs,"d");
+    if (d) {
+      delims = PyUnicode_AsUTF8AndSize(d,&ndelims);
+      if (!delims) {
+        PyErr_SetString(PyExc_ValueError,
+          ERROR_PREF "d must be a string");
+        return NULL;
+      }
     }
   }
 
@@ -184,7 +209,7 @@ PyObject* pipe_call(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
     if (pipe(pipes[i])) ERR("pipe")
   }
 
-  pid_t pid = fork();
+  const pid_t pid = fork();
   if (pid < 0) ERR("fork")
   if (pid == 0) { // this is the child process
     close(pipes[0][1]); // close the write end
@@ -210,15 +235,28 @@ PyObject* pipe_call(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
   close(pipes[0][1]); // send EOF
   wait(NULL); // wait for the child
 
-  char buf[256];
+  /* if (!delims) { */
+    size_t bufcap = 1 << 8, buflen = 0;
+    char* buf = malloc(bufcap);
+    for (;;) {
+      const size_t avail = bufcap-buflen-1;
+      const ssize_t nread = read(pipes[1][0],buf+buflen,avail);
+      if (nread == 0) break; // TODO: is this correct?
+      if (nread < 0) ERR("read")
+      if (nread == avail)
+        buf = realloc(buf, bufcap <<= 1);
+      buflen += nread;
+    }
+    close(pipes[1][0]);
+    buf[buflen] = '\0';
 
-  ssize_t nread = read(pipes[1][0],buf,255);
-  close(pipes[1][0]);
-  if (nread < 0) ERR("read")
-  buf[255] = '\0';
-
-  PyObject* str = PyUnicode_FromStringAndSize(buf,nread);
-  return str;
+    PyObject* str = PyUnicode_FromStringAndSize(buf,buflen);
+    free(buf);
+    return str;
+  /* } else { */
+  /*   // TODO: yield lines */
+  /*   Py_RETURN_NONE; */
+  /* } */
 
   // Py_RETURN_NONE;
 }
@@ -229,8 +267,8 @@ PyObject* pipe_call(pipe_obj* self, PyTupleObject* targs, PyObject* kwargs) {
 //
 // static
 // PyMethodDef pipe_methods[] = {
-//   { "fill", (PyCFunction) pipe_fcn, METH_VARARGS,
-//     "Fill histogram bin corresponding to the provided point"
+//   { "fcn", (PyCFunction) pipe_fcn, METH_VARARGS,
+//     "description"
 //   },
 //   { NULL }
 // };
@@ -240,7 +278,7 @@ PyTypeObject pipe_type = {
   PyVarObject_HEAD_INIT(NULL, 0)
   .tp_name = STR(MODULE_NAME) ".pipe",
   .tp_doc = "Pipe object",
-  .tp_basicsize = sizeof(pipe_obj),
+  .tp_basicsize = sizeof(pipe_args),
   .tp_itemsize = 0,
   .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
   .tp_new = PyType_GenericNew,
