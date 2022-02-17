@@ -10,7 +10,7 @@ PYTHON_INCLUDE := $(shell \
 
 LIB := chadpipe
 
-$(LIB).so: CFLAGS += -isystem $(PYTHON_INCLUDE) -fPIC -fwrapv -ffast-math
+$(LIB).so: CFLAGS += -isystem $(PYTHON_INCLUDE) -fPIC -fwrapv
 $(LIB).so: LDFLAGS += -shared
 
 all: $(LIB).so
