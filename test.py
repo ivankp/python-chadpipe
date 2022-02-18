@@ -22,8 +22,18 @@ print(pipe(
     ['sed','s/b/B/g']
 )('abc\n'))
 
+# print(pipe(
+#     ['ping','-c','5','google.com'],
+#     ['grep','^rtt'],
+#     ['sed','s/=/:/']
+# )())
+
 print(pipe(
-    ['ping','-c','5','google.com'],
-    ['grep','^rtt'],
-    ['sed','s/=/:/']
+    ['seq','1000000000'],
+    ['head','-n1']
+)()) # seq: write error: Broken pipe
+
+print(pipe(
+    ['seq','5'],
+    ['head','-n1']
 )())

@@ -49,6 +49,8 @@ void pipe_dealloc(pipe_args* self) {
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
+// TODO: accept byte and unicode strings, return byte strings
+
 static
 int pipe_init(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   const unsigned nargs = Py_SIZE(targs);
@@ -168,7 +170,6 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
       source = NULL;
     } else if (PyUnicode_Check(source)) { // str
       source_type = source_str;
-      /* Py_INCREF(source); */
     } else {
       PyErr_SetString(PyExc_ValueError,
         ERROR_PREF "unexpected source argument type");
@@ -207,6 +208,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
 
   const unsigned nprocs = self->nargs;
   pid_t* const pids = malloc(sizeof(pid_t)*nprocs);
+  // TODO: do I need all pids?
 
   int pipes[2][2];
   if (pipe(pipes[0])) ERR("pipe")
@@ -216,11 +218,11 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     const pid_t pid = pids[i] = fork();
     if (pid < 0) ERR("fork")
     if (pid == 0) { // this is the child process
-      printf("%2d %s\n",i,self->args[i][0]);
-
       if (dup2(pipes[0][0], STDIN_FILENO ) < 0) ERR("dup2")
       if (dup2(pipes[1][1], STDOUT_FILENO) < 0) ERR("dup2")
+      // Note: dup2 doesn't close original fd
 
+      // Note: fds are open separately in both processes
       close(pipes[0][0]);
       close(pipes[0][1]);
       close(pipes[1][0]);
@@ -259,12 +261,11 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
         buf = realloc(buf, bufcap <<= 1);
       buflen += nread;
     }
-    close(pipes[0][0]); // close read end of output pipe
     buf[buflen] = '\0';
+    close(pipes[0][0]); // close read end of output pipe
 
-    for (unsigned i=0; i<nprocs; ++i) { // wait for all children
+    for (unsigned i=0; i<nprocs; ++i) // wait for all children
       waitpid(pids[i],NULL,0);
-    }
     free(pids);
 
     PyObject* str = PyUnicode_FromStringAndSize(buf,buflen);
