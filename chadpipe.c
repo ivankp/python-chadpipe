@@ -203,45 +203,37 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
 }
 
   // https://youtu.be/6xbLgZpOBi8
+  // https://youtu.be/VzCawLzITh0
 
-  // create all pipes
   const unsigned nprocs = self->nargs;
-  const unsigned npipes = nprocs+1;
-  typedef int pipe_fds[2]; // 0 - read end, 1 - write end
-  pipe_fds* const pipes = malloc(sizeof(pipe_fds)*npipes);
-  for (unsigned i=0; i<npipes; ++i) {
-    if (pipe(pipes[i])) ERR("pipe")
-  }
+  pid_t* const pids = malloc(sizeof(pid_t)*nprocs);
 
-  /* pid_t last_pid; */
+  int pipes[2][2];
+  if (pipe(pipes[0])) ERR("pipe")
+
   for (unsigned i=0; i<nprocs; ++i) {
-    printf("%2d %s\n",i,self->args[i][0]);
-    const pid_t pid = fork();
+    if (pipe(pipes[1])) ERR("pipe")
+    const pid_t pid = pids[i] = fork();
     if (pid < 0) ERR("fork")
     if (pid == 0) { // this is the child process
-      if (dup2(pipes[i  ][0], STDIN_FILENO ) < 0) ERR("dup2")
-      if (dup2(pipes[i+1][1], STDOUT_FILENO) < 0) ERR("dup2")
+      printf("%2d %s\n",i,self->args[i][0]);
 
-      close(pipes[i  ][0]);
-      close(pipes[i  ][1]);
-      close(pipes[i+1][0]);
-      close(pipes[i+1][1]);
+      if (dup2(pipes[0][0], STDIN_FILENO ) < 0) ERR("dup2")
+      if (dup2(pipes[1][1], STDOUT_FILENO) < 0) ERR("dup2")
 
-      if (execvp(self->args[0][0],self->args[0]) < 0) ERR("execvp")
+      close(pipes[0][0]);
+      close(pipes[0][1]);
+      close(pipes[1][0]);
+      close(pipes[1][1]);
+
+      if (execvp(self->args[i][0],self->args[i]) < 0) ERR("execvp")
       // child process is replaced by exec()
     }
-    puts(STR(__LINE__));
-    /* last_pid = pid; */
     // original process
-    close(pipes[i  ][0]); // read end of input pipe
-    close(pipes[i+1][1]); // write end of output pipe
+    close(pipes[0][0]); // read end of input pipe
+    close(pipes[1][1]); // write end of output pipe
+    pipes[0][0] = pipes[1][0];
   }
-  /* puts("closing"); */
-  /* close(pipes[0][0]); */
-  /* close(pipes[1][1]); */
-  /* close(pipes[1][0]); */
-  /* close(pipes[2][1]); */
-  /* puts("closed"); */
 
   // this is the original process
   switch (source_type) {
@@ -250,34 +242,30 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     case source_str:
       Py_ssize_t len = 0;
       const char* str = PyUnicode_AsUTF8AndSize(source,&len);
-      puts("writing");
       if (write(pipes[0][1],str,len) < 0) ERR("write")
       break;
   }
   close(pipes[0][1]); // send EOF to input pipe
 
-  puts("waiting");
-  while (wait(NULL) > 0) { } // wait for all children
-  /* waitpid(last_pid,NULL,0); */
-
-  puts(STR(__LINE__));
   if (!delims) {
     size_t bufcap = 1 << 8, buflen = 0;
     char* buf = malloc(bufcap);
-    puts(STR(__LINE__));
     for (;;) {
       const size_t avail = bufcap-buflen-1;
-      puts("reading");
-      const ssize_t nread = read(pipes[npipes-1][0],buf+buflen,avail);
+      const ssize_t nread = read(pipes[0][0],buf+buflen,avail);
       if (nread == 0) break; // TODO: is this correct?
       if (nread < 0) ERR("read")
       if (nread == avail)
         buf = realloc(buf, bufcap <<= 1);
       buflen += nread;
     }
-    close(pipes[npipes-1][0]); // close read end of output pipe
+    close(pipes[0][0]); // close read end of output pipe
     buf[buflen] = '\0';
-    free(pipes);
+
+    for (unsigned i=0; i<nprocs; ++i) { // wait for all children
+      waitpid(pids[i],NULL,0);
+    }
+    free(pids);
 
     PyObject* str = PyUnicode_FromStringAndSize(buf,buflen);
     free(buf);
