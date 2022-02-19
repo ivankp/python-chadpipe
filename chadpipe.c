@@ -19,6 +19,20 @@
 
 #define ERROR_PREF __FILE__ ":" STR(__LINE__) ": "
 
+const char* cstr(PyObject* obj, Py_ssize_t* len) {
+  const char* str = PyUnicode_AsUTF8AndSize(obj,len);
+  if (str) return str;
+  str = PyBytes_AsString(obj);
+  if (str) {
+    PyErr_Clear();
+    *len = PyBytes_GET_SIZE(obj);
+    return str;
+  }
+  PyErr_SetString(PyExc_TypeError,
+    "expected a unicode or bytes string");
+  return NULL;
+}
+
 typedef struct {
   PyObject_HEAD
   unsigned nargs;
@@ -70,7 +84,7 @@ int pipe_init(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   for (unsigned ai=0; ai<nargs; ++ai) {
     PyObject* iter = PyObject_GetIter(args[ai]);
     if (!iter) {
-      // PyErr_SetString(PyExc_ValueError,
+      // PyErr_SetString(PyExc_TypeError,
       //   ERROR_PREF "invalid pipe argument, not iterable");
       goto err;
     }
@@ -78,9 +92,9 @@ int pipe_init(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     unsigned i=0, cap=0;
     for (PyObject* item; (item = PyIter_Next(iter)); ++i) {
       Py_ssize_t len = 0;
-      const char* str = PyUnicode_AsUTF8AndSize(item,&len);
+      const char* str = cstr(item,&len);
       if (!str) {
-        PyErr_SetString(PyExc_ValueError,
+        PyErr_SetString(PyExc_TypeError,
           ERROR_PREF "all exec args must be strings");
         goto err_item;
       }
@@ -171,7 +185,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     } else if (PyUnicode_Check(source)) { // str
       source_type = source_str;
     } else {
-      PyErr_SetString(PyExc_ValueError,
+      PyErr_SetString(PyExc_TypeError,
         ERROR_PREF "unexpected source argument type");
       return NULL;
     }
@@ -184,7 +198,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     if (d) {
       delims = PyUnicode_AsUTF8AndSize(d,&ndelims);
       if (!delims) {
-        PyErr_SetString(PyExc_ValueError,
+        PyErr_SetString(PyExc_TypeError,
           ERROR_PREF "d must be a string");
         return NULL;
       }
@@ -199,7 +213,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     ERROR_PREF FCN "(): [%d] %s", \
     e, strerror(e) \
   ); \
-  PyErr_SetString(PyExc_ValueError,msg); \
+  PyErr_SetString(PyExc_RuntimeError,msg); \
   goto err; \
 }
 
@@ -210,7 +224,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   pid_t* const pids = malloc(sizeof(pid_t)*nprocs);
   // TODO: do I need all pids?
 
-  int pipes[2][2];
+  int pipes[2][2]; // 0 - read end, 1 - write end
   if (pipe(pipes[0])) ERR("pipe")
 
   for (unsigned i=0; i<nprocs; ++i) {
@@ -243,7 +257,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
       break;
     case source_str:
       Py_ssize_t len = 0;
-      const char* str = PyUnicode_AsUTF8AndSize(source,&len);
+      const char* str = cstr(source,&len);
       if (write(pipes[0][1],str,len) < 0) ERR("write")
       break;
   }

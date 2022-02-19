@@ -30,10 +30,10 @@ print(pipe(
 
 print(pipe(
     ['seq','1000000000'],
-    ['head','-n1']
+    ['head','-n2']
 )()) # seq: write error: Broken pipe
 
 print(pipe(
     ['seq','5'],
-    ['head','-n1']
+    ['head','-n2']
 )())
