@@ -63,8 +63,6 @@ void pipe_dealloc(pipe_args* self) {
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
-// TODO: accept byte and unicode strings, return byte strings
-
 static
 int pipe_init(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   const unsigned nargs = Py_SIZE(targs);
@@ -182,7 +180,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   if (source) {
     if (source == Py_None) { // None
       source = NULL;
-    } else if (PyUnicode_Check(source)) { // str
+    } else if (PyUnicode_Check(source) || PyBytes_Check(source)) { // str
       source_type = source_str;
     } else {
       PyErr_SetString(PyExc_TypeError,
@@ -191,17 +189,30 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     }
   }
 
-  Py_ssize_t ndelims = 0;
-  const char* delims = NULL;
+  char delim;
+  bool delim_set = false;
   if (kwargs) {
     PyObject* d = PyDict_GetItemString(kwargs,"d");
-    if (d) {
-      delims = PyUnicode_AsUTF8AndSize(d,&ndelims);
-      if (!delims) {
-        PyErr_SetString(PyExc_TypeError,
-          ERROR_PREF "d must be a string");
-        return NULL;
+    if (d && d!=Py_None) {
+      if (PyLong_Check(d)) {
+        const long x = PyLong_AsLong(d);
+        if (0 <= x && x < 256) {
+          delim = x;
+          goto d_ok;
+        }
+      } else {
+        Py_ssize_t len;
+        const char* dstr = cstr(d,&len);
+        if (dstr && len==1) {
+          delim = *dstr;
+          goto d_ok;
+        }
       }
+      PyErr_SetString(PyExc_ValueError,
+        ERROR_PREF "d must represent a single byte character");
+      return NULL;
+d_ok:
+      delim_set = true;
     }
   }
 
@@ -221,7 +232,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   // https://youtu.be/VzCawLzITh0
 
   const unsigned nprocs = self->nargs;
-  pid_t* const pids = malloc(sizeof(pid_t)*nprocs);
+  pid_t* const pids = calloc(nprocs,sizeof(pid_t));
   // TODO: do I need all pids?
 
   int pipes[2][2]; // 0 - read end, 1 - write end
@@ -229,7 +240,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
 
   for (unsigned i=0; i<nprocs; ++i) {
     if (pipe(pipes[1])) ERR("pipe")
-    const pid_t pid = pids[i] = fork();
+    const pid_t pid = fork();
     if (pid < 0) ERR("fork")
     if (pid == 0) { // this is the child process
       if (dup2(pipes[0][0], STDIN_FILENO ) < 0) ERR("dup2")
@@ -242,10 +253,13 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
       close(pipes[1][0]);
       close(pipes[1][1]);
 
+      // TODO: how to handle child process failure???
+
       if (execvp(self->args[i][0],self->args[i]) < 0) ERR("execvp")
       // child process is replaced by exec()
     }
     // original process
+    pids[i] = pid;
     close(pipes[0][0]); // read end of input pipe
     close(pipes[1][1]); // write end of output pipe
     pipes[0][0] = pipes[1][0];
@@ -263,14 +277,17 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   }
   close(pipes[0][1]); // send EOF to input pipe
 
-  if (!delims) {
+  if (!delim_set) {
     size_t bufcap = 1 << 8, buflen = 0;
     char* buf = malloc(bufcap);
     for (;;) {
       const size_t avail = bufcap-buflen-1;
       const ssize_t nread = read(pipes[0][0],buf+buflen,avail);
       if (nread == 0) break; // TODO: is this correct?
-      if (nread < 0) ERR("read")
+      if (nread < 0) {
+        free(buf);
+        ERR("read")
+      }
       if (nread == avail)
         buf = realloc(buf, bufcap <<= 1);
       buflen += nread;
@@ -285,13 +302,14 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     PyObject* str = PyUnicode_FromStringAndSize(buf,buflen);
     free(buf);
     return str;
+
   } else {
-    // TODO: yield lines
+    // TODO: construct and return a generator
     Py_RETURN_NONE;
   }
 
 err:
-  // TODO: clean-up
+  free(pids);
   return NULL;
 }
 
@@ -314,7 +332,7 @@ PyTypeObject pipe_type = {
   .tp_doc = "Pipe object",
   .tp_basicsize = sizeof(pipe_args),
   .tp_itemsize = 0,
-  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+  .tp_flags = Py_TPFLAGS_DEFAULT,
   .tp_new = PyType_GenericNew,
   .tp_init = (initproc) pipe_init,
   .tp_dealloc = (destructor) pipe_dealloc,
