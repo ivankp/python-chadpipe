@@ -19,6 +19,18 @@
 
 #define ERROR_PREF __FILE__ ":" STR(__LINE__) ": "
 
+#define ERR(FCN) { \
+  const int e = errno; \
+  char msg[1<<8]; \
+  snprintf( \
+    msg, sizeof(msg), \
+    ERROR_PREF FCN "(): [%d] %s", \
+    e, strerror(e) \
+  ); \
+  PyErr_SetString(PyExc_RuntimeError,msg); \
+  goto err; \
+}
+
 const char* cstr(PyObject* obj, Py_ssize_t* len) {
   const char* str = PyUnicode_AsUTF8AndSize(obj,len);
   if (str) return str;
@@ -67,6 +79,7 @@ static
 int pipe_init(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   const unsigned nargs = Py_SIZE(targs);
   if (nargs < 1) {
+    // TODO: allow 0 intermediate processes, just a straight pipe
     PyErr_SetString(PyExc_ValueError,
       ERROR_PREF "pipe requires at least 1 argument");
     return -1;
@@ -156,13 +169,79 @@ PyObject* pipe_str(pipe_args* self) {
   return str;
 }
 
-// bool all_ascii(const char* s, size_t n) {
-//   for (size_t i=0; i<n; ++i)
-//     if (s[i] < 0) return false;
-//   return true;
-// }
+typedef struct {
+  PyObject_HEAD
+  unsigned nprocs;
+  unsigned char ch;
+  int fd, *pids;
+  size_t cap, len;
+  char *buf, *cur;
+} output_iterator;
 
-enum source_type_enum { source_none, source_str };
+static
+void output_iterator_dealloc(output_iterator* self) {
+  close(self->fd); // close read end of output pipe
+  for (unsigned i=0; i<self->nprocs; ++i) // wait for all children
+    waitpid(self->pids[i],NULL,0);
+  free(self->pids);
+  free(self->buf);
+  Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
+static
+PyObject* output_iterator_next(output_iterator* self) {
+  if (self->len == (size_t)-1) // if last d is not last char
+    return NULL;
+
+again:
+  char* end = memchr(self->cur, self->ch, self->len);
+  if (!end) goto read;
+
+yield:
+  size_t len = end - self->cur;
+  PyObject* str = PyBytes_FromStringAndSize(self->cur,len);
+  ++len;
+  self->cur += len;
+  self->len -= len;
+  return str;
+
+read:
+  end = self->cur + self->len;
+  const size_t avail = self->cap - (end - self->buf);
+  if (avail == 0) {
+    const size_t offset = self->cur - self->buf;
+    self->buf = realloc(self->buf, self->cap <<= 1);
+    self->cur = self->buf + offset;
+    end = self->cur + self->len;
+  }
+  const ssize_t nread = read( self->fd, end, avail );
+  if (nread == 0) {
+    if (self->len == 0) return NULL;
+    goto yield;
+  }
+  if (nread < 0) ERR("read")
+  goto again;
+
+err:
+  return NULL;
+}
+
+static
+PyTypeObject output_iterator_type = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = STR(MODULE_NAME) ".output_iterator",
+  .tp_doc = "Pipe output iterator",
+  .tp_basicsize = sizeof(output_iterator),
+  .tp_itemsize = 0,
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  /* .tp_alloc = PyType_GenericAlloc, */
+  .tp_new = PyType_GenericNew,
+  .tp_dealloc = (destructor) output_iterator_dealloc,
+  .tp_iter = PyObject_SelfIter,
+  .tp_iternext = (iternextfunc) output_iterator_next,
+};
+
+enum source_type_enum { source_none, source_unicode, source_bytes };
 
 static
 PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
@@ -180,8 +259,10 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
   if (source) {
     if (source == Py_None) { // None
       source = NULL;
-    } else if (PyUnicode_Check(source) || PyBytes_Check(source)) { // str
-      source_type = source_str;
+    } else if (PyUnicode_Check(source)) { // unicode string
+      source_type = source_unicode;
+    } else if (PyBytes_Check(source)) { // byte string
+      source_type = source_bytes;
     } else {
       PyErr_SetString(PyExc_TypeError,
         ERROR_PREF "unexpected source argument type");
@@ -189,7 +270,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
     }
   }
 
-  char delim;
+  unsigned char delim;
   bool delim_set = false;
   if (kwargs) {
     PyObject* d = PyDict_GetItemString(kwargs,"d");
@@ -215,18 +296,6 @@ d_ok:
       delim_set = true;
     }
   }
-
-#define ERR(FCN) { \
-  const int e = errno; \
-  char msg[1<<8]; \
-  snprintf( \
-    msg, sizeof(msg), \
-    ERROR_PREF FCN "(): [%d] %s", \
-    e, strerror(e) \
-  ); \
-  PyErr_SetString(PyExc_RuntimeError,msg); \
-  goto err; \
-}
 
   // https://youtu.be/6xbLgZpOBi8
   // https://youtu.be/VzCawLzITh0
@@ -269,7 +338,8 @@ d_ok:
   switch (source_type) {
     case source_none:
       break;
-    case source_str:
+    case source_unicode:
+    case source_bytes:
       Py_ssize_t len = 0;
       const char* str = cstr(source,&len);
       if (write(pipes[0][1],str,len) < 0) ERR("write")
@@ -281,18 +351,20 @@ d_ok:
     size_t bufcap = 1 << 8, buflen = 0;
     char* buf = malloc(bufcap);
     for (;;) {
-      const size_t avail = bufcap-buflen-1;
+      const size_t avail = bufcap-buflen;
       const ssize_t nread = read(pipes[0][0],buf+buflen,avail);
       if (nread == 0) break; // TODO: is this correct?
-      if (nread < 0) {
-        free(buf);
-        ERR("read")
+      else {
+        if (nread < 0) {
+          free(buf);
+          ERR("read")
+        }
+        if (nread == avail)
+          buf = realloc(buf, bufcap <<= 1);
+        buflen += nread;
       }
-      if (nread == avail)
-        buf = realloc(buf, bufcap <<= 1);
-      buflen += nread;
     }
-    buf[buflen] = '\0';
+    /* buf[buflen] = '\0'; */
     close(pipes[0][0]); // close read end of output pipe
 
     for (unsigned i=0; i<nprocs; ++i) // wait for all children
@@ -304,11 +376,26 @@ d_ok:
     return str;
 
   } else {
-    // TODO: construct and return a generator
-    Py_RETURN_NONE;
+    // construct and return a generator
+    // transfer ownership of remaining resources
+    output_iterator* it = PyObject_New(output_iterator,&output_iterator_type);
+    it->nprocs = nprocs;
+    it->ch = delim;
+    it->fd = pipes[0][0];
+    it->pids = memcpy(
+      malloc(sizeof(pid_t)*nprocs),
+      pids,
+      sizeof(pid_t)*nprocs
+    );
+    it->cur = it->buf = malloc((it->cap = 1 << 8));
+    it->len = 0;
+
+    return (PyObject*)it;
   }
 
 err:
+  for (unsigned i=0; i<nprocs; ++i) // wait for all children
+    if (pids[i]) waitpid(pids[i],NULL,0);
   free(pids);
   return NULL;
 }
@@ -355,18 +442,26 @@ PyModuleDef CAT(MODULE_NAME,_module) = {
   // .m_methods = CAT(MODULE_NAME,_methods),
 };
 
+#define INIT(X) \
+  Py_INCREF(&CAT(X,_type)); \
+  if (PyModule_AddObject( m, STR(X), (PyObject*) &CAT(X,_type) ) < 0) \
+    goto CAT(err_,X);
+
 PyMODINIT_FUNC CAT(PyInit_,MODULE_NAME)(void) {
   if (PyType_Ready(&pipe_type) < 0) return NULL;
 
   PyObject *m = PyModule_Create(&CAT(MODULE_NAME,_module));
   if (m == NULL) return NULL;
 
-  Py_INCREF(&pipe_type);
-  if (PyModule_AddObject(m,"pipe",(PyObject*)&pipe_type) < 0) {
-    Py_DECREF(&pipe_type);
-    Py_DECREF(m);
-    return NULL;
-  }
+  INIT(pipe)
+  INIT(output_iterator)
 
   return m;
+
+err_output_iterator:
+  Py_DECREF(&output_iterator_type);
+err_pipe:
+  Py_DECREF(&pipe_type);
+  Py_DECREF(m);
+  return NULL;
 }
