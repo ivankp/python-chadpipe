@@ -38,5 +38,11 @@ print(pipe(
     ['head','-n','2']
 )())
 
-for i,line in enumerate(pipe(['seq','5'])(d='\n')):
-    print(i,': ',line,sep='')
+it = pipe(['seq','500'])(d='\n',cap=15)
+print(type(it))
+for line in it:
+    print()
+    print(line)
+
+# for i,line in enumerate(pipe(['seq','5'])(d='\n')):
+#     print(i,': ',line,sep='')

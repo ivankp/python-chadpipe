@@ -193,11 +193,18 @@ PyObject* output_iterator_next(output_iterator* self) {
   if (self->len == (size_t)-1) // if last d is not last char
     return NULL;
 
-again:
+find:
+  printf("find\n");
+  /* printf("ch: %u\n", (unsigned)(unsigned char)self->ch); */
+  printf("len: %lu\n",self->len);
   char* end = memchr(self->cur, self->ch, self->len);
+  printf("buf: %p\n",self->buf);
+  printf("cur: %p\n",self->cur);
+  printf("end: %p\n",end);
   if (!end) goto read;
 
 yield:
+  printf("yield\n");
   size_t len = end - self->cur;
   PyObject* str = PyBytes_FromStringAndSize(self->cur,len);
   ++len;
@@ -206,21 +213,32 @@ yield:
   return str;
 
 read:
+  printf("read\n");
+  printf("cap: %lu\n",self->cap);
   end = self->cur + self->len;
-  const size_t avail = self->cap - (end - self->buf);
+  size_t avail = self->cap - (end - self->buf);
+  printf("avail: %lu\n",avail);
   if (avail == 0) {
-    const size_t offset = self->cur - self->buf;
-    self->buf = realloc(self->buf, self->cap <<= 1);
-    self->cur = self->buf + offset;
+    avail = self->cur - self->buf;
+    if (avail) { // shift buffer
+      self->cur = memmove(self->buf,self->cur,self->len);
+    } else { // resize buffer
+      const size_t offset = self->cur - self->buf;
+      self->buf = realloc(self->buf, self->cap <<= 1);
+      self->cur = self->buf + offset;
+    }
     end = self->cur + self->len;
+    printf("cap: %lu\n",self->cap);
   }
   const ssize_t nread = read( self->fd, end, avail );
+  printf("nread: %ld\n",nread);
   if (nread == 0) {
     if (self->len == 0) return NULL;
     goto yield;
   }
   if (nread < 0) ERR("read")
-  goto again;
+  self->len += nread;
+  goto find;
 
 err:
   return NULL;
@@ -272,6 +290,7 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
 
   unsigned char delim;
   bool delim_set = false;
+  size_t bufcap = getpagesize();
   if (kwargs) {
     PyObject* d = PyDict_GetItemString(kwargs,"d");
     if (d && d!=Py_None) {
@@ -294,6 +313,17 @@ PyObject* pipe_call(pipe_args* self, PyTupleObject* targs, PyObject* kwargs) {
       return NULL;
 d_ok:
       delim_set = true;
+    }
+
+    PyObject* cap = PyDict_GetItemString(kwargs,"cap");
+    if (cap && cap!=Py_None) {
+      const long x = PyLong_AsLong(cap);
+      if (x <= 0) {
+        PyErr_SetString(PyExc_ValueError,
+          ERROR_PREF "cap must be a positive int");
+        return NULL;
+      }
+      bufcap = x;
     }
   }
 
@@ -348,7 +378,7 @@ d_ok:
   close(pipes[0][1]); // send EOF to input pipe
 
   if (!delim_set) {
-    size_t bufcap = 1 << 8, buflen = 0;
+    size_t buflen = 0;
     char* buf = malloc(bufcap);
     for (;;) {
       const size_t avail = bufcap-buflen;
@@ -387,7 +417,7 @@ d_ok:
       pids,
       sizeof(pid_t)*nprocs
     );
-    it->cur = it->buf = malloc((it->cap = 1 << 8));
+    it->cur = it->buf = malloc((it->cap = bufcap));
     it->len = 0;
 
     return (PyObject*)it;
