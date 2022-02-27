@@ -56,7 +56,7 @@ echo 'test text' | sed s/t/T/g
 A defined `pipe` is executed by calling it. The call returns what the last
 process in the pipe writes to stdout as a single byte string.
 
-A single `pipe` can be executed multiple times.
+The same instance of `pipe` can be executed multiple times.
 The pipe object doesn't keep any state besides the list of arguments,
 which is not modified by execution.
 
