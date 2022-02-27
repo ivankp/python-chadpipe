@@ -15,7 +15,8 @@ library, with it's verbose syntax, particularly for piping between processes.
 The library is written in C for Linux and makes use of
 [`fork()`](https://man7.org/linux/man-pages/man2/fork.2.html),
 [`pipe()`](https://man7.org/linux/man-pages/man2/pipe.2.html),
-[`dup2()`](https://man7.org/linux/man-pages/man2/dup.2.html)
+[`dup2()`](https://man7.org/linux/man-pages/man2/dup.2.html), and
+[`exec()`](https://man7.org/linux/man-pages/man3/exec.3.html),
 functions declared in `<unistd.h>`.
 
 Compatibility with other systems is not guaranteed.
@@ -29,7 +30,7 @@ from chadpipe import pipe
 ```
 
 The `pipe` class models a pipeline of execution and data processing rather
-than the Linux `pipe()` function.
+than a single Linux pipe created by the `pipe()` function.
 
 The usage of `pipe` is split into two stages:
 1. definition implemented via `pipe` object construction, and
@@ -110,6 +111,10 @@ which prints
 2: 3
 ```
 
+The behavior with `d=None` is the same as if the argument was not passed,
+in which case the whole output is returned as one byte string directly rather
+than being yielded via a generator.
+
 ## Initial buffer capacity
 Either the call function or the iterator maintain a buffer into which the
 `pipe` output is read.
@@ -117,7 +122,7 @@ By default, the initial size of that buffer is equal to the value returned by
 `getpagesize()`, which on Linux is typically 4096 bytes.
 The initial capacity of the buffer can be changed by passing a `cap` argument
 to the call function.
-The behavior of `cap=None` is the same as if the argument was not passed.
+The behavior with `cap=None` is the same as if the argument was not passed.
 Whether `cap` is provided or not, if the buffer size is not large enough, it
 is reallocated in powers of 2, starting at the initial capacity.
 
