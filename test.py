@@ -38,11 +38,12 @@ print(pipe(
     ['head','-n','2']
 )())
 
-it = pipe(['seq','500'])(d='\n',cap=15)
+it = pipe(['seq','5000'])(d='\n',cap=15)
 print(type(it))
 for line in it:
-    print()
-    print(line)
+    i = int(line)
+    if i%100 == 0:
+        print(line)
 
 # for i,line in enumerate(pipe(['seq','5'])(d='\n')):
 #     print(i,': ',line,sep='')

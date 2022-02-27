@@ -64,10 +64,8 @@ void pipe_dealloc(pipe_args* self) {
       char** a = self->args[i];
       if (!a) break;
       for (char** b=a; *b; ++b) {
-        // printf("free \"%s\"\n",*b);
         free(*b);
       }
-      // printf("free %u\n",i);
       free(a);
     }
     free(self->args);
@@ -194,17 +192,10 @@ PyObject* output_iterator_next(output_iterator* self) {
     return NULL;
 
 find:
-  printf("find\n");
-  /* printf("ch: %u\n", (unsigned)(unsigned char)self->ch); */
-  printf("len: %lu\n",self->len);
   char* end = memchr(self->cur, self->ch, self->len);
-  printf("buf: %p\n",self->buf);
-  printf("cur: %p\n",self->cur);
-  printf("end: %p\n",end);
   if (!end) goto read;
 
 yield:
-  printf("yield\n");
   size_t len = end - self->cur;
   PyObject* str = PyBytes_FromStringAndSize(self->cur,len);
   ++len;
@@ -213,11 +204,8 @@ yield:
   return str;
 
 read:
-  printf("read\n");
-  printf("cap: %lu\n",self->cap);
   end = self->cur + self->len;
   size_t avail = self->cap - (end - self->buf);
-  printf("avail: %lu\n",avail);
   if (avail == 0) {
     avail = self->cur - self->buf;
     if (avail) { // shift buffer
@@ -228,10 +216,8 @@ read:
       self->cur = self->buf + offset;
     }
     end = self->cur + self->len;
-    printf("cap: %lu\n",self->cap);
   }
   const ssize_t nread = read( self->fd, end, avail );
-  printf("nread: %ld\n",nread);
   if (nread == 0) {
     if (self->len == 0) return NULL;
     goto yield;
