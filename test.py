@@ -28,12 +28,15 @@ print(pipe(
 #     ['sed','s/=/:/']
 # )())
 
-print(pipe(
-    ['seq','1000000000'],
-    ['head','-n2']
-)()) # seq: write error: Broken pipe
+# print(pipe(
+#     ['seq','1000000000'],
+#     ['head','-1']
+# )()) # seq: write error: Broken pipe
 
 print(pipe(
     ['seq','5'],
-    ['head','-n2']
+    ['head','-n','2']
 )())
+
+for i,line in enumerate(pipe(['seq','5'])(d='\n')):
+    print(i,': ',line,sep='')

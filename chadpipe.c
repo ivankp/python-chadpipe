@@ -233,7 +233,7 @@ PyTypeObject output_iterator_type = {
   .tp_doc = "Pipe output iterator",
   .tp_basicsize = sizeof(output_iterator),
   .tp_itemsize = 0,
-  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
   /* .tp_alloc = PyType_GenericAlloc, */
   .tp_new = PyType_GenericNew,
   .tp_dealloc = (destructor) output_iterator_dealloc,
@@ -442,26 +442,38 @@ PyModuleDef CAT(MODULE_NAME,_module) = {
   // .m_methods = CAT(MODULE_NAME,_methods),
 };
 
-#define INIT(X) \
-  Py_INCREF(&CAT(X,_type)); \
-  if (PyModule_AddObject( m, STR(X), (PyObject*) &CAT(X,_type) ) < 0) \
-    goto CAT(err_,X);
+#define MODULE_TYPES \
+  F(pipe) \
+  F(output_iterator)
+
+#define MODULE_TYPES_R \
+  F(output_iterator) \
+  F(pipe)
 
 PyMODINIT_FUNC CAT(PyInit_,MODULE_NAME)(void) {
-  if (PyType_Ready(&pipe_type) < 0) return NULL;
+
+#define F(X) \
+  if (PyType_Ready(&X##_type) < 0) return NULL;
+  MODULE_TYPES
+#undef F
 
   PyObject *m = PyModule_Create(&CAT(MODULE_NAME,_module));
   if (m == NULL) return NULL;
 
-  INIT(pipe)
-  INIT(output_iterator)
+#define F(X) \
+  Py_INCREF(&X##_type); \
+  if (PyModule_AddObject( m, #X, (PyObject*) &X##_type ) < 0) \
+    goto err_##X;
+  MODULE_TYPES
+#undef F
 
   return m;
 
-err_output_iterator:
-  Py_DECREF(&output_iterator_type);
-err_pipe:
-  Py_DECREF(&pipe_type);
+#define F(X) \
+  err_##X: Py_DECREF(&X##_type);
+  MODULE_TYPES_R
+#undef F
+
   Py_DECREF(m);
   return NULL;
 }
