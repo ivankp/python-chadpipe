@@ -38,7 +38,7 @@ print(pipe(
     ['head','-n','2']
 )())
 
-it = pipe(['seq','5000'])(d='\n',cap=15)
+it = pipe(['seq','500'])(d='\n')
 print(type(it))
 for line in it:
     i = int(line)

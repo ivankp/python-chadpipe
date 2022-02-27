@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <errno.h>
+
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -238,7 +239,6 @@ PyTypeObject output_iterator_type = {
   .tp_basicsize = sizeof(output_iterator),
   .tp_itemsize = 0,
   .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
-  /* .tp_alloc = PyType_GenericAlloc, */
   .tp_new = PyType_GenericNew,
   .tp_dealloc = (destructor) output_iterator_dealloc,
   .tp_iter = PyObject_SelfIter,
@@ -318,7 +318,6 @@ d_ok:
 
   const unsigned nprocs = self->nargs;
   pid_t* const pids = calloc(nprocs,sizeof(pid_t));
-  // TODO: do I need all pids?
 
   int pipes[2][2]; // 0 - read end, 1 - write end
   if (pipe(pipes[0])) ERR("pipe")
@@ -369,7 +368,7 @@ d_ok:
     for (;;) {
       const size_t avail = bufcap-buflen;
       const ssize_t nread = read(pipes[0][0],buf+buflen,avail);
-      if (nread == 0) break; // TODO: is this correct?
+      if (nread == 0) break;
       else {
         if (nread < 0) {
           free(buf);
@@ -387,7 +386,7 @@ d_ok:
       waitpid(pids[i],NULL,0);
     free(pids);
 
-    PyObject* str = PyUnicode_FromStringAndSize(buf,buflen);
+    PyObject* str = PyBytes_FromStringAndSize(buf,buflen);
     free(buf);
     return str;
 
