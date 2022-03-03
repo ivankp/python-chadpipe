@@ -15,7 +15,7 @@ $(LIB).so: LDFLAGS += -shared
 
 all: $(LIB).so
 
-$(LIB).so: %.so: %.c
+%.so: %.c
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 clean:

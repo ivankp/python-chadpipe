@@ -17,9 +17,12 @@ The library is written in C for Linux and makes use of
 [`pipe()`](https://man7.org/linux/man-pages/man2/pipe.2.html),
 [`dup2()`](https://man7.org/linux/man-pages/man2/dup.2.html), and
 [`exec()`](https://man7.org/linux/man-pages/man3/exec.3.html),
-functions declared in `<unistd.h>`.
+functions declared in
+[`<unistd.h>`](https://man7.org/linux/man-pages/man0/unistd.h.0p.html).
 
 Compatibility with other systems is not guaranteed.
+
+The library is for Python 3.
 
 # Design and examples
 
