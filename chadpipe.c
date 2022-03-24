@@ -79,7 +79,7 @@ int run_pipe(pipe_args* self, pipe_state* state) {
   const unsigned nprocs = self->nargs;
   pid_t* const pids = calloc(nprocs,sizeof(pid_t));
 
-  int pipes[2][2] = { {-1,-1}, {-1,-1} }; // 0 - read end, 1 - write end
+  int pipes[2][2]; // 0 - read end, 1 - write end
   if (pipe(pipes[0])) ERR("pipe")
 
   for (unsigned i=0; i<nprocs; ++i) {
