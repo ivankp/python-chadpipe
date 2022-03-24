@@ -20,7 +20,11 @@
 
 #define ERROR_PREF __FILE__ ":" STR(__LINE__) ": "
 
-#define ERR(FCN) { \
+#define GET_MACRO(_1,_2,NAME,...) NAME
+
+#define ERR(...) GET_MACRO(__VA_ARGS__,ERR2,ERR1)(__VA_ARGS__)
+#define ERR1(FCN) ERR2(err,FCN)
+#define ERR2(LABEL,FCN) { \
   const int e = errno; \
   char msg[1<<8]; \
   snprintf( \
@@ -29,7 +33,18 @@
     e, strerror(e) \
   ); \
   PyErr_SetString(PyExc_RuntimeError,msg); \
-  goto err; \
+  goto LABEL; \
+}
+
+#define FATAL(FCN) { \
+  const int e = errno; \
+  char msg[1<<8]; \
+  fprintf( stderr, \
+    msg, sizeof(msg), \
+    ERROR_PREF FCN "(): [%d] %s", \
+    e, strerror(e) \
+  ); \
+  exit(1); \
 }
 
 const char* cstr(PyObject* obj, Py_ssize_t* len) {
@@ -51,6 +66,74 @@ typedef struct {
   unsigned nargs;
   char*** args;
 } pipe_args;
+
+typedef struct {
+  int r, w;
+  unsigned nprocs;
+  pid_t* pids;
+} pipe_state;
+
+static
+int run_pipe(pipe_args* self, pipe_state* state) {
+  // https://youtu.be/6xbLgZpOBi8
+  // https://youtu.be/VzCawLzITh0
+
+  const unsigned nprocs = self->nargs;
+  pid_t* const pids = calloc(nprocs,sizeof(pid_t));
+
+  int pipes[2][2] = { {-1,-1}, {-1,-1} }; // 0 - read end, 1 - write end
+  if (pipe(pipes[0])) ERR("pipe")
+
+  for (unsigned i=0; i<nprocs; ++i) {
+    if (pipe(pipes[1])) ERR(err_close_0,"pipe")
+    const pid_t pid = fork();
+    if (pid < 0) ERR(err_close_1,"fork")
+    if (pid == 0) { // this is the child process
+      if (dup2(pipes[0][0], STDIN_FILENO ) < 0) FATAL("dup2")
+      if (dup2(pipes[1][1], STDOUT_FILENO) < 0) FATAL("dup2")
+      // Note: dup2 doesn't close original fd
+
+      // Note: fds are open separately in both processes
+      close(pipes[0][0]);
+      close(pipes[0][1]);
+      close(pipes[1][0]);
+      close(pipes[1][1]);
+
+      // TODO: how to handle child process failure???
+
+      if (execvp(self->args[i][0],self->args[i]) < 0) FATAL("execvp")
+      // child process is replaced by exec()
+    }
+    // original process
+    pids[i] = pid;
+    close(pipes[0][0]); // read end of input pipe
+    close(pipes[1][1]); // write end of output pipe
+    pipes[0][0] = pipes[1][0];
+  }
+
+  // transfer ownership
+  state->r = pipes[0][0];
+  state->w = pipes[0][1];
+  state->nprocs = nprocs;
+  state->pids = pids;
+
+  return 0;
+
+err_close_1:
+  close(pipes[1][0]);
+  close(pipes[1][1]);
+
+err_close_0:
+  close(pipes[0][0]);
+  close(pipes[0][1]);
+
+err:
+  for (unsigned i=0; i<nprocs; ++i) // wait for all children
+    if (pids[i]) waitpid(pids[i],NULL,0);
+  if (pids) free(pids);
+
+  return -1;
+}
 
 // static
 // PyObject* pipe_new(PyTypeObject* type, PyObject* args, PyObject* kwargs) {
@@ -172,7 +255,8 @@ typedef struct {
   PyObject_HEAD
   unsigned nprocs;
   unsigned char ch;
-  int fd, *pids;
+  int fd;
+  pid_t *pids;
   size_t cap, len;
   char *buf, *cur;
 } output_iterator;
@@ -313,43 +397,9 @@ d_ok:
     }
   }
 
-  // https://youtu.be/6xbLgZpOBi8
-  // https://youtu.be/VzCawLzITh0
+  pipe_state state; // start all child processes
+  if (run_pipe(self,&state)) return NULL;
 
-  const unsigned nprocs = self->nargs;
-  pid_t* const pids = calloc(nprocs,sizeof(pid_t));
-
-  int pipes[2][2]; // 0 - read end, 1 - write end
-  if (pipe(pipes[0])) ERR("pipe")
-
-  for (unsigned i=0; i<nprocs; ++i) {
-    if (pipe(pipes[1])) ERR("pipe")
-    const pid_t pid = fork();
-    if (pid < 0) ERR("fork")
-    if (pid == 0) { // this is the child process
-      if (dup2(pipes[0][0], STDIN_FILENO ) < 0) ERR("dup2")
-      if (dup2(pipes[1][1], STDOUT_FILENO) < 0) ERR("dup2")
-      // Note: dup2 doesn't close original fd
-
-      // Note: fds are open separately in both processes
-      close(pipes[0][0]);
-      close(pipes[0][1]);
-      close(pipes[1][0]);
-      close(pipes[1][1]);
-
-      // TODO: how to handle child process failure???
-
-      if (execvp(self->args[i][0],self->args[i]) < 0) ERR("execvp")
-      // child process is replaced by exec()
-    }
-    // original process
-    pids[i] = pid;
-    close(pipes[0][0]); // read end of input pipe
-    close(pipes[1][1]); // write end of output pipe
-    pipes[0][0] = pipes[1][0];
-  }
-
-  // this is the original process
   switch (source_type) {
     case source_none:
       break;
@@ -357,22 +407,22 @@ d_ok:
     case source_bytes:
       Py_ssize_t len = 0;
       const char* str = cstr(source,&len);
-      if (write(pipes[0][1],str,len) < 0) ERR("write")
+      if (write(state.w,str,len) < 0) ERR(err_close_w,"write")
       break;
   }
-  close(pipes[0][1]); // send EOF to input pipe
+  close(state.w); // send EOF to input pipe
 
   if (!delim_set) {
     size_t buflen = 0;
     char* buf = malloc(bufcap);
     for (;;) {
       const size_t avail = bufcap-buflen;
-      const ssize_t nread = read(pipes[0][0],buf+buflen,avail);
+      const ssize_t nread = read(state.r,buf+buflen,avail);
       if (nread == 0) break;
       else {
         if (nread < 0) {
           free(buf);
-          ERR("read")
+          ERR(err_close_r,"read")
         }
         if (nread == avail)
           buf = realloc(buf, bufcap <<= 1);
@@ -380,11 +430,11 @@ d_ok:
       }
     }
     /* buf[buflen] = '\0'; */
-    close(pipes[0][0]); // close read end of output pipe
+    close(state.r); // close read end of output pipe
 
-    for (unsigned i=0; i<nprocs; ++i) // wait for all children
-      waitpid(pids[i],NULL,0);
-    free(pids);
+    for (unsigned i=0; i<state.nprocs; ++i) // wait for all children
+      waitpid(state.pids[i],NULL,0);
+    free(state.pids);
 
     PyObject* str = PyBytes_FromStringAndSize(buf,buflen);
     free(buf);
@@ -394,38 +444,109 @@ d_ok:
     // construct and return a generator
     // transfer ownership of remaining resources
     output_iterator* it = PyObject_New(output_iterator,&output_iterator_type);
-    it->nprocs = nprocs;
+    it->nprocs = state.nprocs;
     it->ch = delim;
-    it->fd = pipes[0][0];
-    it->pids = memcpy(
-      malloc(sizeof(pid_t)*nprocs),
-      pids,
-      sizeof(pid_t)*nprocs
-    );
+    it->fd = state.r;
+    it->pids = state.pids;
     it->cur = it->buf = malloc((it->cap = bufcap));
     it->len = 0;
 
     return (PyObject*)it;
   }
 
-err:
-  for (unsigned i=0; i<nprocs; ++i) // wait for all children
-    if (pids[i]) waitpid(pids[i],NULL,0);
-  free(pids);
+err_close_w:
+  close(state.w);
+err_close_r:
+  close(state.r);
+// err:
+  for (unsigned i=0; i<state.nprocs; ++i) // wait for all children
+    if (state.pids[i]) waitpid(state.pids[i],NULL,0);
+  if (state.pids) free(state.pids);
   return NULL;
 }
 
-// static
-// PyObject* pipe_fcn(hist* self, PyTupleObject* targs, PyObject* kwargs) {
-// }
-//
-// static
-// PyMethodDef pipe_methods[] = {
-//   { "fcn", (PyCFunction) pipe_fcn, METH_VARARGS,
-//     "description"
-//   },
-//   { NULL }
-// };
+typedef struct {
+  PyObject_HEAD
+  pipe_state state;
+} open_pipe;
+
+static
+void open_pipe_dealloc(open_pipe* self) {
+  close(self->state.w); // close write end
+  close(self->state.r); // close read  end
+  for (unsigned i=0; i<self->state.nprocs; ++i) // wait for all children
+    waitpid(self->state.pids[i],NULL,0);
+  free(self->state.pids);
+  Py_TYPE(self)->tp_free((PyObject*)self);
+}
+
+// TODO: read until char or length
+// TODO: must do this for open pipe, because read() won't return 0 until iput is closed
+
+static // TODO
+PyObject* open_pipe_read(pipe_args* self) {
+  /*
+  size_t buflen = 0;
+  char* buf = malloc(bufcap);
+  for (;;) {
+    const size_t avail = bufcap-buflen;
+    const ssize_t nread = read(pipes[0][0],buf+buflen,avail);
+    if (nread == 0) break;
+    else {
+      if (nread < 0) {
+        free(buf);
+        ERR("read")
+      }
+      if (nread == avail)
+        buf = realloc(buf, bufcap <<= 1);
+      buflen += nread;
+    }
+  }
+  */
+  return NULL;
+}
+
+static
+PyMethodDef open_pipe_methods[] = {
+  { "open", (PyCFunction) open_pipe_read, METH_NOARGS,
+    "read from the open pipe"
+  },
+  { NULL }
+};
+
+static
+PyTypeObject open_pipe_type = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = STR(MODULE_NAME) ".open_pipe",
+  .tp_doc = "Open pipe",
+  .tp_basicsize = sizeof(open_pipe),
+  .tp_itemsize = 0,
+  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+  .tp_new = PyType_GenericNew,
+  .tp_dealloc = (destructor) open_pipe_dealloc,
+  .tp_methods = open_pipe_methods,
+};
+
+static
+PyObject* pipe_open(pipe_args* self) {
+  pipe_state state; // start all child processes
+  if (run_pipe(self,&state)) return NULL;
+
+  // construct and return an open_pipe object
+  // transfer ownership of remaining resources
+  open_pipe* op = PyObject_New(open_pipe,&open_pipe_type);
+  op->state = state;
+
+  return (PyObject*)op;
+}
+
+static
+PyMethodDef pipe_methods[] = {
+  { "open", (PyCFunction) pipe_open, METH_NOARGS,
+    "open pipe for incremental writing and reading"
+  },
+  { NULL }
+};
 
 static
 PyTypeObject pipe_type = {
@@ -441,7 +562,7 @@ PyTypeObject pipe_type = {
   .tp_str = (reprfunc) pipe_str,
   .tp_call = (ternaryfunc) pipe_call,
   // .tp_members = pipe_members,
-  // .tp_methods = pipe_methods,
+  .tp_methods = pipe_methods,
 };
 
 // static PyMethodDef CAT(MODULE_NAME,_methods)[] = {
@@ -459,9 +580,11 @@ PyModuleDef CAT(MODULE_NAME,_module) = {
 
 #define MODULE_TYPES \
   F(pipe) \
-  F(output_iterator)
+  F(output_iterator) \
+  F(open_pipe)
 
 #define MODULE_TYPES_R \
+  F(open_pipe) \
   F(output_iterator) \
   F(pipe)
 
