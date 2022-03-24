@@ -38,10 +38,8 @@
 
 #define FATAL(FCN) { \
   const int e = errno; \
-  char msg[1<<8]; \
   fprintf( stderr, \
-    msg, sizeof(msg), \
-    ERROR_PREF FCN "(): [%d] %s", \
+    ERROR_PREF FCN "(): [%d] %s\n", \
     e, strerror(e) \
   ); \
   exit(1); \
@@ -99,9 +97,16 @@ int run_pipe(pipe_args* self, pipe_state* state) {
       close(pipes[1][0]);
       close(pipes[1][1]);
 
-      // TODO: how to handle child process failure???
+      // TODO: how to signal child process failure???
 
-      if (execvp(self->args[i][0],self->args[i]) < 0) FATAL("execvp")
+      char** args = self->args[i];
+      if (execvp(args[0],args) < 0) {
+        fprintf( stderr, "command:" );
+        for (int j=0; args[j]; ++j)
+          fprintf( stderr, " '%s'", args[j] );
+        fprintf( stderr, "\n" );
+        FATAL("execvp")
+      }
       // child process is replaced by exec()
     }
     // original process
